@@ -875,12 +875,16 @@ static void finished_cached_dirents_count(struct cached_dirents *cde,
 }
 
 static bool add_cached_dirent(struct cached_dirents *cde,
-			      struct dir_context *ctx, const char *name,
-			      int namelen, struct cifs_fattr *fattr,
-			      struct file *file)
+			  struct dir_context *ctx, const char *name,
+			  int namelen, struct cifs_fattr *fattr,
+			  struct file *file, bool can_cache)
 {
 	struct cached_dirent *de;
-
+	/* If we can't cache due to memory cap, mark cache as failed */
+	if (!can_cache) {
+		cde->is_failed = 1;
+		return false;
+	}
 	if (cde->file != file)
 		return false;
 	if (cde->is_valid || cde->is_failed)
@@ -921,6 +925,9 @@ static bool cifs_dir_emit(struct dir_context *ctx,
 	size_t delta_bytes = 0;
 	bool rc, added = false;
 	ino_t ino = cifs_uniqueid_to_ino_t(fattr->cf_uniqueid);
+	u64 cap_bytes = 0;
+	u64 used_bytes = 0;
+	bool can_cache = true;
 
 	rc = dir_emit(ctx, name, namelen, ino, fattr->cf_dtype);
 	if (!rc)
@@ -930,9 +937,17 @@ static bool cifs_dir_emit(struct dir_context *ctx,
 		/* Cost of this entry */
 		delta_bytes = sizeof(struct cached_dirent) + (size_t)namelen + 1;
 
+		/* Enforce module-wide memory cap if enabled */
+		if (dir_cache_max_memory_kb) {
+			cap_bytes = (u64)dir_cache_max_memory_kb << 10;
+			used_bytes = (u64)atomic64_read(&cifs_dircache_bytes_used);
+			if (used_bytes + (u64)delta_bytes > cap_bytes)
+				can_cache = false;
+		}
+
 		mutex_lock(&cfid->dirents.de_mutex);
 		added = add_cached_dirent(&cfid->dirents, ctx, name, namelen,
-					  fattr, file);
+				fattr, file, can_cache);
 		mutex_unlock(&cfid->dirents.de_mutex);
 
 		if (added) {

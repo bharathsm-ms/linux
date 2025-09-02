@@ -72,6 +72,7 @@ struct cached_fids {
 
 /* Module-wide directory cache accounting (defined in cifsfs.c) */
 extern atomic64_t cifs_dircache_bytes_used; /* bytes across all mounts */
+extern unsigned long dir_cache_max_memory_kb; /* cap in KB; 0 = unlimited */
 
 extern struct cached_fids *init_cached_dirs(void);
 extern void free_cached_dirs(struct cached_fids *cfids);

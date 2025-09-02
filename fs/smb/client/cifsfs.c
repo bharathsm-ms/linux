@@ -121,6 +121,10 @@ unsigned int dir_cache_timeout = 30;
 module_param(dir_cache_timeout, uint, 0644);
 MODULE_PARM_DESC(dir_cache_timeout, "Number of seconds to cache directory contents for which we have a lease. Default: 30 "
 				 "Range: 1 to 65000 seconds, 0 to disable caching dir contents");
+/* Directory cache memory cap in KB (0 = unlimited). Defaults to ~10% of RAM. */
+unsigned long dir_cache_max_memory_kb;
+module_param(dir_cache_max_memory_kb, ulong, 0644);
+MODULE_PARM_DESC(dir_cache_max_memory_kb, "Module-wide memory cap for cached directory entries in KB (0 = unlimited). Default: ~10% of RAM");
 /* Module-wide total cached dirents (in bytes) across all tcons */
 atomic64_t cifs_dircache_bytes_used = ATOMIC64_INIT(0);
 
@@ -1932,6 +1936,17 @@ init_cifs(void)
 	if (dir_cache_timeout > 65000) {
 		dir_cache_timeout = 65000;
 		cifs_dbg(VFS, "dir_cache_timeout set to max of 65000 seconds\n");
+	}
+
+	/* Set a default cap of ~10% of RAM if not specified (and caching isn't disabled) */
+	if (dir_cache_timeout != 0 && dir_cache_max_memory_kb == 0) {
+		u64 total_bytes;
+		unsigned long default_kb;
+
+		total_bytes = (u64)totalram_pages() << PAGE_SHIFT;
+		/* ~10% of RAM in KB */
+		default_kb = (unsigned long)((total_bytes / 10) >> 10);
+		dir_cache_max_memory_kb = default_kb;
 	}
 
 	cifsiod_wq = alloc_workqueue("cifsiod", WQ_FREEZABLE|WQ_MEM_RECLAIM, 0);
