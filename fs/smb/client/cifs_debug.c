@@ -327,6 +327,9 @@ static int cifs_debug_dirs_proc_show(struct seq_file *m, void *v)
 			list_for_each(tmp1, &ses->tcon_list) {
 				tcon = list_entry(tmp1, struct cifs_tcon, tcon_list);
 				cfids = tcon->cfids;
+				/* cfids can be NULL if dir caching is disabled/not initialized */
+				if (!cfids)
+					continue;
 				spin_lock(&cfids->cfid_list_lock); /* check lock ordering */
 				seq_printf(m, "Num entries: %d, cached_dirents: %lu entries, %llu bytes\n",
 						cfids->num_entries,
