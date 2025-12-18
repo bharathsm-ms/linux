@@ -481,6 +481,14 @@ __releases(&cfid->cfids->cfid_list_lock)
 			cifs_dbg(VFS, "close cached dir rc %d\n", rc);
 	}
 
+	trace_smb3_cached_dir_close(cfid->tcon ? cfid->tcon->debug_id : 0,
+				    cfid->path,
+				    cfid->has_lease,
+				    cfid->is_open,
+				    le64_to_cpu(cfid->fid.persistent_fid),
+				    le64_to_cpu(cfid->fid.volatile_fid),
+				    rc);
+
 	free_cached_dir(cfid);
 }
 

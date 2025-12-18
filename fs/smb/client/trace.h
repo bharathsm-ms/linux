@@ -1841,6 +1841,44 @@ TRACE_EVENT(smb3_cached_dir_invalidate,
 		      __get_str(path))
 	    );
 
+TRACE_EVENT(smb3_cached_dir_close,
+	    TP_PROTO(unsigned int tcon_debug_id,
+		     const char *path,
+		     __u8 has_lease,
+		     __u8 is_open,
+		     __u64 persistent_fid,
+		     __u64 volatile_fid,
+		     int rc),
+	    TP_ARGS(tcon_debug_id, path, has_lease, is_open,
+		    persistent_fid, volatile_fid, rc),
+	    TP_STRUCT__entry(
+		    __field(unsigned int, tcon)
+		    __field(__u8, has_lease)
+		    __field(__u8, is_open)
+		    __field(__u64, persistent_fid)
+		    __field(__u64, volatile_fid)
+		    __field(int, rc)
+		    __string(path, path)
+		     ),
+	    TP_fast_assign(
+		    __entry->tcon = tcon_debug_id;
+		    __entry->has_lease = has_lease;
+		    __entry->is_open = is_open;
+		    __entry->persistent_fid = persistent_fid;
+		    __entry->volatile_fid = volatile_fid;
+		    __entry->rc = rc;
+		    __assign_str(path);
+		   ),
+	    TP_printk("TC=%08x lease=%u open=%u fid=%llx:%llx path=%s rc=%d",
+		      __entry->tcon,
+		      __entry->has_lease,
+		      __entry->is_open,
+		      __entry->persistent_fid,
+		      __entry->volatile_fid,
+		      __get_str(path),
+		      __entry->rc)
+	    );
+
 TRACE_EVENT(smb3_tcon_ref,
 	    TP_PROTO(unsigned int tcon_debug_id, int ref,
 		     enum smb3_tcon_ref_trace trace),
