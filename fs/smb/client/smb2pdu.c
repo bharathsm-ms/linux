@@ -6175,6 +6175,11 @@ replay_again:
 	if (retries)
 		smb2_set_replay(server, &rqst);
 
+	trace_smb3_lock_enter(xid, persist_fid, tcon->tid, tcon->ses->Suid,
+			      le64_to_cpu(buf[0].Offset),
+			      le64_to_cpu(buf[0].Length),
+			      le32_to_cpu(buf[0].Flags), 0);
+
 	rc = cifs_send_recv(xid, tcon->ses, server,
 			    &rqst, &resp_buf_type, flags,
 			    &rsp_iov);
@@ -6183,7 +6188,15 @@ replay_again:
 		cifs_dbg(FYI, "Send error in smb2_lockv = %d\n", rc);
 		cifs_stats_fail_inc(tcon, SMB2_LOCK_HE);
 		trace_smb3_lock_err(xid, persist_fid, tcon->tid,
-				    tcon->ses->Suid, rc);
+				    tcon->ses->Suid,
+				    le64_to_cpu(buf[0].Offset),
+				    le64_to_cpu(buf[0].Length),
+				    le32_to_cpu(buf[0].Flags), rc);
+	} else {
+		trace_smb3_lock_done(xid, persist_fid, tcon->tid, tcon->ses->Suid,
+				     le64_to_cpu(buf[0].Offset),
+				     le64_to_cpu(buf[0].Length),
+				     le32_to_cpu(buf[0].Flags), 0);
 	}
 
 	if (is_replayable_error(rc) &&
