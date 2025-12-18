@@ -460,7 +460,7 @@ __releases(&cfid->cfids->cfid_list_lock)
 {
 	struct cached_fid *cfid = container_of(ref, struct cached_fid,
 					       refcount);
-	int rc;
+	int rc = 0;
 
 	lockdep_assert_held(&cfid->cfids->cfid_list_lock);
 
@@ -496,6 +496,12 @@ void drop_cached_dir_by_name(const unsigned int xid, struct cifs_tcon *tcon,
 		return;
 	}
 	spin_lock(&cfid->cfids->cfid_list_lock);
+	trace_smb3_cached_dir_invalidate(tcon->debug_id, name,
+					SMB3_CDIR_INVAL_RMDIR,
+					cfid->has_lease,
+					cfid->is_open,
+					le64_to_cpu(cfid->fid.persistent_fid),
+					le64_to_cpu(cfid->fid.volatile_fid));
 	if (cfid->has_lease) {
 		cfid->has_lease = false;
 		close_cached_dir_locked(cfid);
@@ -621,6 +627,12 @@ void invalidate_all_cached_dirs(struct cifs_tcon *tcon)
 	 */
 	spin_lock(&cfids->cfid_list_lock);
 	list_for_each_entry_safe(cfid, q, &cfids->entries, entry) {
+		trace_smb3_cached_dir_invalidate(tcon->debug_id, cfid->path,
+						SMB3_CDIR_INVAL_TCON_RESET,
+						cfid->has_lease,
+						cfid->is_open,
+						le64_to_cpu(cfid->fid.persistent_fid),
+						le64_to_cpu(cfid->fid.volatile_fid));
 		list_move(&cfid->entry, &cfids->dying);
 		cfids->num_entries--;
 		cfid->is_open = false;
@@ -685,6 +697,12 @@ bool cached_dir_lease_break(struct cifs_tcon *tcon, __u8 lease_key[16])
 		    !memcmp(lease_key,
 			    cfid->fid.lease_key,
 			    SMB2_LEASE_KEY_SIZE)) {
+			trace_smb3_cached_dir_invalidate(tcon->debug_id, cfid->path,
+						SMB3_CDIR_INVAL_LEASE_BREAK,
+						cfid->has_lease,
+						cfid->is_open,
+						le64_to_cpu(cfid->fid.persistent_fid),
+						le64_to_cpu(cfid->fid.volatile_fid));
 			cfid->has_lease = false;
 			cfid->time = 0;
 			/*
@@ -783,6 +801,13 @@ static void cfids_laundromat_worker(struct work_struct *work)
 	list_for_each_entry_safe(cfid, q, &cfids->entries, entry) {
 		if (cfid->last_access_time &&
 		    time_after(jiffies, cfid->last_access_time + HZ * dir_cache_timeout)) {
+			trace_smb3_cached_dir_invalidate(cfid->tcon ? cfid->tcon->debug_id : 0,
+							cfid->path,
+							SMB3_CDIR_INVAL_TIMEOUT,
+							cfid->has_lease,
+							cfid->is_open,
+							le64_to_cpu(cfid->fid.persistent_fid),
+							le64_to_cpu(cfid->fid.volatile_fid));
 			cfid->on_list = false;
 			list_move(&cfid->entry, &entry);
 			cfids->num_entries--;

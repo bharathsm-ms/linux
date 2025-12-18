@@ -203,6 +203,12 @@
 	EM(SMB3_CDIR_LOOKUP_MISS,	"lookup_miss") \
 	E_(SMB3_CDIR_ERROR,		"error")
 
+#define smb3_cached_dir_inval_reason_traces \
+	EM(SMB3_CDIR_INVAL_LEASE_BREAK,	"lease_break") \
+	EM(SMB3_CDIR_INVAL_TCON_RESET,	"tcon_reset") \
+	EM(SMB3_CDIR_INVAL_RMDIR,	"rmdir") \
+	E_(SMB3_CDIR_INVAL_TIMEOUT,	"timeout")
+
 #undef EM
 #undef E_
 
@@ -219,6 +225,7 @@ enum smb_eio_trace		{ smb_eio_traces } __mode(byte);
 enum smb3_rw_credits_trace	{ smb3_rw_credits_traces } __mode(byte);
 enum smb3_tcon_ref_trace	{ smb3_tcon_ref_traces } __mode(byte);
 enum smb3_cached_dir_result	{ smb3_cached_dir_result_traces } __mode(byte);
+enum smb3_cached_dir_inval_reason { smb3_cached_dir_inval_reason_traces } __mode(byte);
 
 #undef EM
 #undef E_
@@ -234,6 +241,7 @@ smb_eio_traces;
 smb3_rw_credits_traces;
 smb3_tcon_ref_traces;
 smb3_cached_dir_result_traces;
+smb3_cached_dir_inval_reason_traces;
 
 #undef EM
 #undef E_
@@ -1793,6 +1801,44 @@ TRACE_EVENT(smb3_cached_dir_open,
 		      __entry->volatile_fid,
 		      __get_str(path),
 		      __entry->rc)
+	    );
+
+TRACE_EVENT(smb3_cached_dir_invalidate,
+	    TP_PROTO(unsigned int tcon_debug_id,
+		     const char *path,
+		     enum smb3_cached_dir_inval_reason reason,
+		     __u8 has_lease,
+		     __u8 is_open,
+		     __u64 persistent_fid,
+		     __u64 volatile_fid),
+	    TP_ARGS(tcon_debug_id, path, reason, has_lease, is_open,
+		    persistent_fid, volatile_fid),
+	    TP_STRUCT__entry(
+		    __field(unsigned int, tcon)
+		    __field(enum smb3_cached_dir_inval_reason, reason)
+		    __field(__u8, has_lease)
+		    __field(__u8, is_open)
+		    __field(__u64, persistent_fid)
+		    __field(__u64, volatile_fid)
+		    __string(path, path)
+		     ),
+	    TP_fast_assign(
+		    __entry->tcon = tcon_debug_id;
+		    __entry->reason = reason;
+		    __entry->has_lease = has_lease;
+		    __entry->is_open = is_open;
+		    __entry->persistent_fid = persistent_fid;
+		    __entry->volatile_fid = volatile_fid;
+		    __assign_str(path);
+		   ),
+	    TP_printk("TC=%08x why=%s lease=%u open=%u fid=%llx:%llx path=%s",
+		      __entry->tcon,
+		      __print_symbolic(__entry->reason, smb3_cached_dir_inval_reason_traces),
+		      __entry->has_lease,
+		      __entry->is_open,
+		      __entry->persistent_fid,
+		      __entry->volatile_fid,
+		      __get_str(path))
 	    );
 
 TRACE_EVENT(smb3_tcon_ref,
