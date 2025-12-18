@@ -11,6 +11,7 @@
 #include "cifs_debug.h"
 #include "smb2proto.h"
 #include "cached_dir.h"
+#include "trace.h"
 
 static struct cached_fid *init_cached_dir(const char *path);
 static void free_cached_dir(struct cached_fid *cfid);
@@ -187,6 +188,7 @@ replay_again:
 	if (cfid == NULL) {
 		spin_unlock(&cfids->cfid_list_lock);
 		kfree(utf16_path);
+		trace_smb3_cached_dir_open(tcon->debug_id, path, SMB3_CDIR_LOOKUP_MISS, 0, 0, 0, 0, 0, -ENOENT);
 		return -ENOENT;
 	}
 	/*
@@ -199,6 +201,11 @@ replay_again:
 		spin_unlock(&cfids->cfid_list_lock);
 		*ret_cfid = cfid;
 		kfree(utf16_path);
+		trace_smb3_cached_dir_open(tcon->debug_id, path, SMB3_CDIR_HIT,
+					cfid->has_lease, cfid->is_open,
+					0,
+					le64_to_cpu(cfid->fid.persistent_fid),
+					le64_to_cpu(cfid->fid.volatile_fid), 0);
 		return 0;
 	}
 	spin_unlock(&cfids->cfid_list_lock);
@@ -368,6 +375,11 @@ replay_again:
 	spin_unlock(&cfids->cfid_list_lock);
 	/* At this point the directory handle is fully cached */
 	rc = 0;
+	trace_smb3_cached_dir_open(tcon->debug_id, path, SMB3_CDIR_OPENED,
+				cfid->has_lease, cfid->is_open,
+				lease_flags,
+				le64_to_cpu(cfid->fid.persistent_fid),
+				le64_to_cpu(cfid->fid.volatile_fid), rc);
 
 oshr_free:
 	SMB2_open_free(&rqst[0]);
@@ -393,6 +405,11 @@ out:
 		}
 		spin_unlock(&cfids->cfid_list_lock);
 
+		trace_smb3_cached_dir_open(tcon->debug_id, path, SMB3_CDIR_ERROR,
+					cfid->has_lease, cfid->is_open,
+					lease_flags,
+					le64_to_cpu(cfid->fid.persistent_fid),
+					le64_to_cpu(cfid->fid.volatile_fid), rc);
 		close_cached_dir(cfid);
 	} else {
 		*ret_cfid = cfid;

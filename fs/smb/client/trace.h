@@ -197,6 +197,12 @@
 	EM(netfs_trace_tcon_ref_see_fscache_relinq,	"SEE FV-Rlq") \
 	E_(netfs_trace_tcon_ref_see_umount,		"SEE Umount")
 
+#define smb3_cached_dir_result_traces \
+	EM(SMB3_CDIR_HIT,		"hit") \
+	EM(SMB3_CDIR_OPENED,		"opened") \
+	EM(SMB3_CDIR_LOOKUP_MISS,	"lookup_miss") \
+	E_(SMB3_CDIR_ERROR,		"error")
+
 #undef EM
 #undef E_
 
@@ -212,6 +218,7 @@
 enum smb_eio_trace		{ smb_eio_traces } __mode(byte);
 enum smb3_rw_credits_trace	{ smb3_rw_credits_traces } __mode(byte);
 enum smb3_tcon_ref_trace	{ smb3_tcon_ref_traces } __mode(byte);
+enum smb3_cached_dir_result	{ smb3_cached_dir_result_traces } __mode(byte);
 
 #undef EM
 #undef E_
@@ -226,6 +233,7 @@ enum smb3_tcon_ref_trace	{ smb3_tcon_ref_traces } __mode(byte);
 smb_eio_traces;
 smb3_rw_credits_traces;
 smb3_tcon_ref_traces;
+smb3_cached_dir_result_traces;
 
 #undef EM
 #undef E_
@@ -1735,6 +1743,57 @@ TRACE_EVENT(smb3_kerberos_auth,
 			  CIFS_SPNEGO_UPCALL_VERSION, __get_str(host), __entry->addr,
 			  __entry->sec, __entry->uid, __entry->cruid, __get_str(user),
 			  __entry->pid, __entry->upcall_target, __entry->rc))
+
+
+TRACE_EVENT(smb3_cached_dir_open,
+	    TP_PROTO(unsigned int tcon_debug_id,
+		     const char *path,
+		     __u8 result,
+		     __u8 has_lease,
+		     __u8 is_open,
+		     __u32 lease_flags,
+		     __u64 persistent_fid,
+		     __u64 volatile_fid,
+		     int rc),
+	    TP_ARGS(tcon_debug_id, path, result, has_lease, is_open,
+		    lease_flags, persistent_fid, volatile_fid, rc),
+	    TP_STRUCT__entry(
+		    __field(unsigned int, tcon)
+		    __field(__u8, result)
+		    __field(__u8, has_lease)
+		    __field(__u8, is_open)
+		    __field(__u32, lease_flags)
+		    __field(__u64, persistent_fid)
+		    __field(__u64, volatile_fid)
+		    __field(int, rc)
+		    __string(path, path)
+		     ),
+	    TP_fast_assign(
+		    __entry->tcon = tcon_debug_id;
+		    __entry->result = result;
+		    __entry->has_lease = has_lease;
+		    __entry->is_open = is_open;
+		    __entry->lease_flags = lease_flags;
+		    __entry->persistent_fid = persistent_fid;
+		    __entry->volatile_fid = volatile_fid;
+		    __entry->rc = rc;
+		    __assign_str(path);
+		   ),
+	    TP_printk("TC=%08x res=%s lease=%u open=%u lease_flags=0x%x fid=%llx:%llx path=%s rc=%d",
+		      __entry->tcon,
+		      __print_symbolic(__entry->result,
+				      { SMB3_CDIR_HIT, "hit" },
+				      { SMB3_CDIR_OPENED, "opened" },
+				      { SMB3_CDIR_LOOKUP_MISS, "lookup_miss" },
+				      { SMB3_CDIR_ERROR, "error" }),
+		      __entry->has_lease,
+		      __entry->is_open,
+		      __entry->lease_flags,
+		      __entry->persistent_fid,
+		      __entry->volatile_fid,
+		      __get_str(path),
+		      __entry->rc)
+	    );
 
 TRACE_EVENT(smb3_tcon_ref,
 	    TP_PROTO(unsigned int tcon_debug_id, int ref,
