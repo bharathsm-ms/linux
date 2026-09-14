@@ -5,6 +5,7 @@
  */
 
 #include <linux/freezer.h>
+#include <net/net_namespace.h>
 
 #include "smb_common.h"
 #include "server.h"
@@ -28,6 +29,7 @@ struct interface {
 static LIST_HEAD(iface_list);
 
 static int bind_additional_ifaces;
+static struct net *ksmbd_net;
 
 struct tcp_transport {
 	struct ksmbd_transport		transport;
@@ -481,12 +483,12 @@ static int create_socket(struct interface *iface)
 	struct socket *ksmbd_socket;
 	bool ipv4 = false;
 
-	ret = sock_create_kern(current->nsproxy->net_ns, PF_INET6, SOCK_STREAM,
+	ret = sock_create_kern(ksmbd_net, PF_INET6, SOCK_STREAM,
 			IPPROTO_TCP, &ksmbd_socket);
 	if (ret) {
 		if (ret != -EAFNOSUPPORT)
 			pr_err("Can't create socket for ipv6, fallback to ipv4: %d\n", ret);
-		ret = sock_create_kern(current->nsproxy->net_ns, PF_INET,
+		ret = sock_create_kern(ksmbd_net, PF_INET,
 				SOCK_STREAM, IPPROTO_TCP, &ksmbd_socket);
 		if (ret) {
 			pr_err("Can't create socket for ipv4: %d\n", ret);
@@ -622,9 +624,15 @@ static struct notifier_block ksmbd_netdev_notifier = {
 
 int ksmbd_tcp_init(void)
 {
-	register_netdevice_notifier(&ksmbd_netdev_notifier);
+	int ret;
 
-	return 0;
+	ksmbd_net = get_net(current->nsproxy->net_ns);
+	ret = register_netdevice_notifier_net(ksmbd_net, &ksmbd_netdev_notifier);
+	if (ret) {
+		put_net(ksmbd_net);
+		ksmbd_net = NULL;
+	}
+	return ret;
 }
 
 static void tcp_stop_kthread(struct task_struct *kthread)
@@ -657,13 +665,18 @@ void ksmbd_tcp_destroy(void)
 {
 	struct interface *iface, *tmp;
 
-	unregister_netdevice_notifier(&ksmbd_netdev_notifier);
+	if (ksmbd_net)
+		unregister_netdevice_notifier_net(ksmbd_net, &ksmbd_netdev_notifier);
 
 	list_for_each_entry_safe(iface, tmp, &iface_list, entry) {
 		ksmbd_tcp_stop_listener(iface);
 		list_del(&iface->entry);
 		kfree(iface->name);
 		kfree(iface);
+	}
+	if (ksmbd_net) {
+		put_net(ksmbd_net);
+		ksmbd_net = NULL;
 	}
 }
 
