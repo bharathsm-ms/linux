@@ -117,6 +117,7 @@ const struct fs_parameter_spec smb3_fs_parameters[] = {
 	fsparam_flag("seal", Opt_seal),
 	fsparam_flag("noac", Opt_noac),
 	fsparam_flag("fsc", Opt_fsc),
+	fsparam_flag_no("cachetokens", Opt_cachetokens),
 	fsparam_flag("mfsymlinks", Opt_mfsymlinks),
 	fsparam_flag("multiuser", Opt_multiuser),
 	fsparam_flag("sloppy", Opt_sloppy),
@@ -852,6 +853,11 @@ static int smb3_fs_context_validate(struct fs_context *fc)
 	if (rc)
 		return rc;
 
+	if (ctx->cachetokens && !ctx->strict_io) {
+		cifs_errorf(fc, "cachetokens requires cache=strict\n");
+		return -EINVAL;
+	}
+
 	if (ctx->got_version == false)
 		pr_warn_once("No dialect specified on mount. Default has changed to a more secure dialect, SMB2.1 or later (e.g. SMB3.1.1), from CIFS (SMB1). To use the less secure SMB1 dialect to access old servers which do not support SMB3.1.1 (or even SMB3 or SMB2.1) specify vers=1.0 on mount.\n");
 
@@ -934,6 +940,11 @@ static int smb3_verify_reconfigure_ctx(struct fs_context *fc,
 				       struct smb3_fs_context *new_ctx,
 				       struct smb3_fs_context *old_ctx, bool need_recon)
 {
+	if (new_ctx->cachetokens != old_ctx->cachetokens ||
+	    (old_ctx->cachetokens && !new_ctx->strict_io)) {
+		cifs_errorf(fc, "can not change cache token mode during remount\n");
+		return -EINVAL;
+	}
 	if (new_ctx->posix_paths != old_ctx->posix_paths) {
 		cifs_errorf(fc, "can not change posixpaths during remount\n");
 		return -EINVAL;
@@ -1861,6 +1872,9 @@ static int smb3_fs_context_parse_param(struct fs_context *fc,
 		goto cifs_parse_mount_err;
 #endif
 		ctx->fsc = true;
+		break;
+	case Opt_cachetokens:
+		ctx->cachetokens = !result.negated;
 		break;
 	case Opt_mfsymlinks:
 		ctx->mfsymlinks = true;

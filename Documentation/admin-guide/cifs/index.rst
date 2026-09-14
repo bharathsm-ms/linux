@@ -9,6 +9,7 @@ CIFS
 
    introduction
    usage
+   cachetokens
    todo
    changes
    authors

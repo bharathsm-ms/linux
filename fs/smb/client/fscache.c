@@ -11,6 +11,7 @@
 #include "cifs_debug.h"
 #include "cifs_fs_sb.h"
 #include "cifsproto.h"
+#include "fs_context.h"
 
 /*
  * Key for fscache inode.  [!] Contents must match comparisons in cifs_find_inode().
@@ -128,18 +129,29 @@ void cifs_fscache_get_inode_cookie(struct inode *inode)
 	struct cifs_sb_info *cifs_sb = CIFS_SB(inode->i_sb);
 	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
 
+	if (cifs_sb->ctx->cachetokens && !cifsi->cache_token_initialized)
+		return;
+
 	key.uniqueid	= cpu_to_le64(cifsi->uniqueid);
 	key.createtime	= cpu_to_le64(cifsi->createtime);
 	key.type	= (inode->i_mode & S_IFMT) >> 12;
+	if (cifsi->cache_token_cookie)
+		key.type |= 0x40;
 	cifs_fscache_fill_coherency(&cifsi->netfs.inode, &cd);
 
 	cifsi->netfs.cache =
 		fscache_acquire_cookie(tcon->fscache, 0,
 				       &key, sizeof(key),
-				       &cd, sizeof(cd),
+				       &cd, cifsi->cache_token_cookie ? sizeof(cd) :
+				       offsetof(typeof(cd), token),
 				       i_size_read(&cifsi->netfs.inode));
 	if (cifsi->netfs.cache)
 		mapping_set_release_always(inode->i_mapping);
+	if (cifs_sb->ctx->cachetokens)
+		cifs_dbg(FYI, "cache token fscache-acquire ino=%llu token-mode=%u cookie=%08x size=%lld\n",
+			 cifsi->uniqueid, cifsi->cache_token_cookie,
+			 cifsi->netfs.cache ? cifsi->netfs.cache->debug_id : 0,
+			 i_size_read(inode));
 }
 
 void cifs_fscache_unuse_inode_cookie(struct inode *inode, bool update)

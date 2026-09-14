@@ -44,6 +44,7 @@ struct ksmbd_server_config {
 	unsigned int		max_connections;
 	unsigned int		max_inflight_req;
 	unsigned int		max_ip_connections;
+	u8			cache_token_epoch[16];
 
 	char			*conf[SERVER_CONF_WORK_GROUP + 1];
 	struct task_struct	*dh_task;

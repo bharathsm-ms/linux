@@ -395,6 +395,7 @@ cifs_mark_open_files_invalid(struct cifs_tcon *tcon)
 	list_for_each_safe(tmp, tmp1, &tcon->openFileList) {
 		open_file = list_entry(tmp, struct cifsFileInfo, tlist);
 		open_file->invalidHandle = true;
+		cifs_cache_token_invalidate(d_inode(open_file->dentry));
 		open_file->oplock_break_cancelled = true;
 	}
 	spin_unlock(&tcon->open_file_lock);
@@ -666,6 +667,68 @@ cifs_down_write(struct rw_semaphore *sem)
 static void cifsFileInfo_put_work(struct work_struct *work);
 void serverclose_work(struct work_struct *work);
 
+static bool cifs_cache_token_update(struct inode *inode, struct file *file,
+				    const struct cifs_fid *fid)
+{
+	struct cifsInodeInfo *cinode = CIFS_I(inode);
+	bool valid, changed;
+
+	if (file->f_mode & FMODE_WRITE)
+		cinode->cache_token_writable = true;
+	valid = !cinode->cache_token_writable && !fid->purge_cache &&
+		(cinode->oplock & CIFS_CACHE_READ_FLG) &&
+		fid->cache_token_requested && fid->cache_token_received &&
+		!mapping_tagged(inode->i_mapping, PAGECACHE_TAG_DIRTY) &&
+		!mapping_tagged(inode->i_mapping, PAGECACHE_TAG_WRITEBACK);
+	changed = !valid || !cinode->cache_token_valid ||
+		memcmp(&cinode->cache_token, &fid->cache_token, sizeof(cinode->cache_token));
+	cifs_dbg(FYI, "cache token %s ino=%llu requested=%u received=%u oplock=0x%x purge=%u writer=%u size=%lld\n",
+		 valid ? (changed ? "changed" : "matched") : "unavailable",
+		 cinode->uniqueid, fid->cache_token_requested,
+		 fid->cache_token_received, cinode->oplock,
+		 fid->purge_cache, cinode->cache_token_writable,
+		 i_size_read(inode));
+	if (valid)
+		cinode->cache_token = fid->cache_token;
+	WRITE_ONCE(cinode->cache_token_valid, valid);
+	return changed;
+}
+
+static void cifs_cache_token_open(struct inode *inode, bool changed)
+{
+	struct cifsInodeInfo *cinode = CIFS_I(inode);
+	struct cifs_fscache_inode_coherency_data cd;
+
+	if (changed)
+		set_bit(CIFS_INO_INVALID_MAPPING, &cinode->flags);
+	if (cifs_revalidate_mapping(inode)) {
+		cifs_cache_token_invalidate(inode);
+		cifs_reset_oplock(cinode);
+	}
+	if (changed) {
+		cifs_fscache_fill_coherency(inode, &cd);
+		fscache_invalidate(cifs_inode_cookie(inode), &cd, i_size_read(inode), 0);
+	}
+	if (!cinode->cache_token_initialized) {
+		cinode->cache_token_initialized = true;
+		cinode->cache_token_cookie = READ_ONCE(cinode->cache_token_valid);
+		cifs_fscache_get_inode_cookie(inode);
+	}
+}
+
+void cifs_fscache_use_inode_cookie(struct inode *inode, bool update)
+{
+	struct cifsInodeInfo *cinode = CIFS_I(inode);
+
+	mutex_lock(&cinode->cache_token_mutex);
+	if (update && CIFS_SB(inode)->ctx->cachetokens) {
+		cinode->cache_token_writable = true;
+		cifs_invalidate_cache(inode, 0);
+	}
+	fscache_use_cookie(cifs_inode_cookie(inode), update);
+	mutex_unlock(&cinode->cache_token_mutex);
+}
+
 struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 				       struct tcon_link *tlink, __u32 oplock,
 				       const char *symlink_target)
@@ -730,6 +793,7 @@ struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 	list_add(&fdlocks->llist, &cinode->llist);
 	up_write(&cinode->lock_sem);
 
+	mutex_lock(&cinode->cache_token_mutex);
 	spin_lock(&tcon->open_file_lock);
 	if (fid->pending_open->oplock != CIFS_OPLOCK_NO_CHANGE && oplock)
 		oplock = fid->pending_open->oplock;
@@ -744,6 +808,9 @@ struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 		set_bit(CIFS_INO_TMPFILE, &cinode->flags);
 	fid->purge_cache = false;
 	server->ops->set_fid(cfile, fid, oplock);
+	if (CIFS_SB(inode)->ctx->cachetokens &&
+	    cifs_cache_token_update(inode, file, fid))
+		set_bit(CIFS_INO_INVALID_MAPPING, &cinode->flags);
 
 	if (file->f_mode & FMODE_READ)
 		list_add(&cfile->flist, &cinode->openFileList);
@@ -754,6 +821,10 @@ struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 
 	if (fid->purge_cache)
 		cifs_zap_mapping(inode);
+	if (CIFS_SB(inode)->ctx->cachetokens)
+		cifs_cache_token_open(inode,
+			test_bit(CIFS_INO_INVALID_MAPPING, &cinode->flags));
+	mutex_unlock(&cinode->cache_token_mutex);
 
 	file->private_data = cfile;
 	return cfile;
@@ -903,6 +974,11 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 	atomic_dec(&tcon->num_local_opens);
 
 	if (list_empty(&cifsi->openFileList)) {
+		bool retain_cache = cifs_sb->ctx->cachetokens &&
+			READ_ONCE(cifsi->cache_token_valid) &&
+			(cifsi->oplock & CIFS_CACHE_READ_FLG) &&
+			!test_bit(CIFS_INO_INVALID_MAPPING, &cifsi->flags);
+
 		cifs_dbg(FYI, "closing last open instance for inode %p\n",
 			 d_inode(cifs_file->dentry));
 		/*
@@ -910,8 +986,11 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 		 * close  because it may cause a error when we open this file
 		 * again and get at least level II oplock.
 		 */
-		if (cifs_sb_flags(cifs_sb) & CIFS_MOUNT_STRICT_IO)
+		if ((cifs_sb_flags(cifs_sb) & CIFS_MOUNT_STRICT_IO) && !retain_cache)
 			set_bit(CIFS_INO_INVALID_MAPPING, &cifsi->flags);
+		if (cifs_sb->ctx->cachetokens)
+			cifs_dbg(FYI, "cache token last-close ino=%llu retain=%u\n",
+				 cifsi->uniqueid, retain_cache);
 		cifs_set_oplock_level(cifsi, 0);
 	}
 
@@ -1214,8 +1293,7 @@ int cifs_open(struct inode *inode, struct file *file)
 #endif /* CONFIG_CIFS_ALLOW_INSECURE_LEGACY */
 
 use_cache:
-	fscache_use_cookie(cifs_inode_cookie(file_inode(file)),
-			   file->f_mode & FMODE_WRITE);
+	cifs_fscache_use_inode_cookie(file_inode(file), file->f_mode & FMODE_WRITE);
 	if (!(file->f_flags & O_DIRECT))
 		goto out;
 	if ((file->f_flags & (O_ACCMODE | O_APPEND)) == O_RDONLY)
@@ -1297,6 +1375,8 @@ cifs_reopen_file(struct cifsFileInfo *cfile, bool can_flush)
 
 	inode = d_inode(cfile->dentry);
 	cifs_sb = CIFS_SB(inode->i_sb);
+	if (cifs_sb->ctx->cachetokens)
+		cifs_invalidate_cache(inode, 0);
 	tcon = tlink_tcon(cfile->tlink);
 	server = tcon->ses->server;
 

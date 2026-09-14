@@ -12,6 +12,7 @@
 #include <linux/sysfs.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/random.h>
 
 #include "server.h"
 #include "smb_common.h"
@@ -441,6 +442,8 @@ static void server_conf_free(void)
 
 static int server_conf_init(void)
 {
+	get_random_bytes(server_conf.cache_token_epoch,
+			 sizeof(server_conf.cache_token_epoch));
 	WRITE_ONCE(server_conf.state, SERVER_STATE_STARTING_UP);
 	server_conf.enforced_signing = 0;
 	server_conf.min_protocol = ksmbd_min_protocol();

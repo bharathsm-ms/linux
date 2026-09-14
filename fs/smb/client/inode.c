@@ -112,7 +112,6 @@ static void cifs_set_ops(struct inode *inode)
 static void
 cifs_revalidate_cache(struct inode *inode, struct cifs_fattr *fattr)
 {
-	struct cifs_fscache_inode_coherency_data cd;
 	struct cifsInodeInfo *cifs_i = CIFS_I(inode);
 	struct timespec64 mtime;
 
@@ -146,8 +145,7 @@ cifs_revalidate_cache(struct inode *inode, struct cifs_fattr *fattr)
 		 __func__, cifs_i->uniqueid);
 	set_bit(CIFS_INO_INVALID_MAPPING, &cifs_i->flags);
 	/* Invalidate fscache cookie */
-	cifs_fscache_fill_coherency(&cifs_i->netfs.inode, &cd);
-	fscache_invalidate(cifs_inode_cookie(inode), &cd, i_size_read(inode), 0);
+	cifs_invalidate_cache(inode, 0);
 }
 
 /*
@@ -2834,6 +2832,8 @@ skip_invalidate:
 int
 cifs_zap_mapping(struct inode *inode)
 {
+	if (CIFS_SB(inode)->ctx->cachetokens)
+		cifs_invalidate_cache(inode, 0);
 	set_bit(CIFS_INO_INVALID_MAPPING, &CIFS_I(inode)->flags);
 	return cifs_revalidate_mapping(inode);
 }
@@ -3078,13 +3078,14 @@ void cifs_resize_file_locked(struct inode *inode, loff_t offset)
 
 	lockdep_assert_held_write(&inode->i_rwsem);
 
+	cifs_cache_token_invalidate(inode);
 	netfs_resize_file(netfs_inode(inode), offset, true);
 	cifs_setsize(inode, offset);
 
 	if (!cookie)
 		return;
 
-	fscache_use_cookie(cookie, true);
+	cifs_fscache_use_inode_cookie(inode, true);
 	fscache_resize_cookie(cookie, offset);
 	cifs_fscache_unuse_inode_cookie(inode, true);
 }

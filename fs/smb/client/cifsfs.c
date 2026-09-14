@@ -456,6 +456,12 @@ cifs_alloc_inode(struct super_block *sb)
 	cifs_inode->uniqueid = 0;
 	cifs_inode->createtime = 0;
 	cifs_inode->epoch = 0;
+	mutex_init(&cifs_inode->cache_token_mutex);
+	memset(&cifs_inode->cache_token, 0, sizeof(cifs_inode->cache_token));
+	cifs_inode->cache_token_valid = false;
+	cifs_inode->cache_token_initialized = false;
+	cifs_inode->cache_token_cookie = false;
+	cifs_inode->cache_token_writable = false;
 	spin_lock_init(&cifs_inode->open_file_lock);
 	generate_random_uuid(cifs_inode->lease_key);
 	cifs_inode->symlink_target = NULL;
@@ -754,6 +760,8 @@ cifs_show_options(struct seq_file *s, struct dentry *root)
 		seq_puts(s, ",mfsymlinks");
 	if (sbflags & CIFS_MOUNT_FSCACHE)
 		seq_puts(s, ",fsc");
+	if (cifs_sb->ctx->cachetokens)
+		seq_puts(s, ",cachetokens");
 	if (sbflags & CIFS_MOUNT_NOSSYNC)
 		seq_puts(s, ",nostrictsync");
 	if (sbflags & CIFS_MOUNT_NO_PERM)

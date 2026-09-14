@@ -623,8 +623,7 @@ int cifs_atomic_open(struct inode *dir, struct dentry *direntry,
 		goto out;
 	}
 
-	fscache_use_cookie(cifs_inode_cookie(file_inode(file)),
-			   file->f_mode & FMODE_WRITE);
+	cifs_fscache_use_inode_cookie(file_inode(file), file->f_mode & FMODE_WRITE);
 
 out:
 	cifs_put_tlink(tlink);
@@ -1162,8 +1161,7 @@ int cifs_tmpfile(struct mnt_idmap *idmap, struct inode *dir,
 	if (rc)
 		goto out;
 
-	fscache_use_cookie(cifs_inode_cookie(file_inode(file)),
-			   file->f_mode & FMODE_WRITE);
+	cifs_fscache_use_inode_cookie(file_inode(file), file->f_mode & FMODE_WRITE);
 out:
 	cifs_put_tlink(tlink);
 	free_xid(xid);

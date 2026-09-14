@@ -2425,14 +2425,17 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 			__u16 *epoch,
 			char *lease_key, __u8 *oplock,
 			struct smb2_file_all_info *buf,
-			struct create_posix_rsp *posix)
+			struct create_posix_rsp *posix,
+			struct smb2_cache_token *token, bool *token_received)
 {
 	struct smb2_create_rsp *rsp = rsp_iov->iov_base;
+	struct smb2_cache_token parsed_token = {};
 	struct create_context *cc;
-	size_t rem, off, len;
+	size_t rem, off, len, context_len;
 	size_t doff, dlen;
 	size_t noff, nlen;
 	char *name;
+	bool token_seen = false;
 	static const char smb3_create_tag_posix[] = {
 		0x93, 0xAD, 0x25, 0x50, 0x9C,
 		0xB4, 0x11, 0xE7, 0xB4, 0x23, 0x83,
@@ -2440,9 +2443,18 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 	};
 
 	*oplock = 0;
+	if (token)
+		memset(token, 0, sizeof(*token));
+	if (token_received)
+		*token_received = false;
+	if (rsp_iov->iov_len < offsetof(struct smb2_create_rsp, Buffer))
+		return -EINVAL;
 
 	off = le32_to_cpu(rsp->CreateContextsOffset);
 	rem = le32_to_cpu(rsp->CreateContextsLength);
+	if (rem && (off < offsetof(struct smb2_create_rsp, Buffer) ||
+		    !IS_ALIGNED(off, 8) || rem < sizeof(*cc)))
+		return -EINVAL;
 	if (check_add_overflow(off, rem, &len) || len > rsp_iov->iov_len)
 		return -EINVAL;
 	cc = (struct create_context *)((u8 *)rsp + off);
@@ -2452,9 +2464,13 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 		buf->IndexNumber = 0;
 
 	while (rem >= sizeof(*cc)) {
+		off = le32_to_cpu(cc->Next);
+		if (off && (off < sizeof(*cc) || !IS_ALIGNED(off, 8) || off > rem))
+			return -EINVAL;
+		context_len = off ? off : rem;
 		doff = le16_to_cpu(cc->DataOffset);
 		dlen = le32_to_cpu(cc->DataLength);
-		if (check_add_overflow(doff, dlen, &len) || len > rem)
+		if (check_add_overflow(doff, dlen, &len) || len > context_len)
 			return -EINVAL;
 
 		noff = le16_to_cpu(cc->NameOffset);
@@ -2476,6 +2492,13 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 		case 16:
 			if (posix && !memcmp(name, smb3_create_tag_posix, 16))
 				parse_posix_ctxt(cc, buf, posix);
+			if (!memcmp(name, SMB2_CREATE_TAG_CACHE_TOKEN, 16)) {
+				if (token_seen || noff < sizeof(*cc) ||
+				    !IS_ALIGNED(doff, 8) || dlen != sizeof(parsed_token))
+					return -EINVAL;
+				token_seen = true;
+				memcpy(&parsed_token, (u8 *)cc + doff, sizeof(parsed_token));
+			}
 			break;
 		default:
 			cifs_dbg(FYI, "%s: unhandled context (nlen=%zu dlen=%zu)\n",
@@ -2488,7 +2511,7 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 		off = le32_to_cpu(cc->Next);
 		if (!off)
 			break;
-		if (check_sub_overflow(rem, off, &rem))
+		if (check_sub_overflow(rem, off, &rem) || rem < sizeof(*cc))
 			return -EINVAL;
 		cc = (struct create_context *)((u8 *)cc + off);
 	}
@@ -2496,6 +2519,10 @@ int smb2_parse_contexts(struct TCP_Server_Info *server,
 	if (rsp->OplockLevel != SMB2_OPLOCK_LEVEL_LEASE)
 		*oplock = rsp->OplockLevel;
 
+	if (token)
+		*token = parsed_token;
+	if (token_received)
+		*token_received = token && token_seen;
 	return 0;
 }
 
@@ -3103,6 +3130,22 @@ err_free_path:
 	return rc;
 }
 
+static int add_cache_token_context(struct kvec *iov, unsigned int *num_iovec)
+{
+	struct create_cache_token_req *context;
+
+	context = kzalloc_obj(*context);
+	if (!context)
+		return -ENOMEM;
+	context->ccontext.NameOffset = cpu_to_le16(offsetof(typeof(*context), Name));
+	context->ccontext.NameLength = cpu_to_le16(sizeof(context->Name));
+	memcpy(context->Name, SMB2_CREATE_TAG_CACHE_TOKEN, sizeof(context->Name));
+	iov[*num_iovec].iov_base = context;
+	iov[*num_iovec].iov_len = sizeof(*context);
+	(*num_iovec)++;
+	return 0;
+}
+
 int
 SMB2_open_init(struct cifs_tcon *tcon, struct TCP_Server_Info *server,
 	       struct smb_rqst *rqst, __u8 *oplock,
@@ -3118,6 +3161,9 @@ SMB2_open_init(struct cifs_tcon *tcon, struct TCP_Server_Info *server,
 	__le16 *copy_path;
 	int rc;
 
+	memset(&oparms->fid->cache_token, 0, sizeof(oparms->fid->cache_token));
+	oparms->fid->cache_token_requested = false;
+	oparms->fid->cache_token_received = false;
 	rc = smb2_plain_req_init(SMB2_CREATE, tcon, server,
 				 (void **) &req, &total_len);
 	if (rc)
@@ -3241,6 +3287,19 @@ SMB2_open_init(struct cifs_tcon *tcon, struct TCP_Server_Info *server,
 
 	add_query_id_context(iov, &n_iov);
 	add_ea_context(oparms, iov, &n_iov);
+
+	if (oparms->cifs_sb && oparms->cifs_sb->ctx->cachetokens &&
+	    oparms->cifs_sb->ctx->strict_io &&
+	    req->CreateDisposition == FILE_OPEN_LE &&
+	    (req->DesiredAccess & (FILE_READ_DATA_LE | FILE_GENERIC_READ_LE)) &&
+	    !(req->DesiredAccess & (FILE_WRITE_DATA_LE | FILE_APPEND_DATA_LE |
+				   FILE_GENERIC_WRITE_LE | FILE_GENERIC_ALL_LE)) &&
+	    !(req->CreateOptions & FILE_DIRECTORY_FILE_LE)) {
+		rc = add_cache_token_context(iov, &n_iov);
+		if (rc)
+			return rc;
+		oparms->fid->cache_token_requested = true;
+	}
 
 	if (n_iov > 2) {
 		/*
@@ -3387,7 +3446,12 @@ replay_again:
 
 
 	rc = smb2_parse_contexts(server, &rsp_iov, &oparms->fid->epoch,
-				 oparms->fid->lease_key, oplock, file_info, posix);
+				 oparms->fid->lease_key, oplock, file_info, posix,
+				 oparms->fid->cache_token_requested ?
+				 &oparms->fid->cache_token : NULL,
+				 &oparms->fid->cache_token_received);
+	if (rc)
+		SMB2_close(xid, tcon, rsp->PersistentFileId, rsp->VolatileFileId);
 
 	trace_smb3_open_done(xid, rsp->PersistentFileId, tcon->tid, ses->Suid,
 			     oparms->create_options, oparms->desired_access,

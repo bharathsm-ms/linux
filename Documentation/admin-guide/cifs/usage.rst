@@ -349,6 +349,13 @@ A partial list of the supported mount options follows:
 		type workloads. So, you need to consider carefully your
 		workload/scenario before using this option. Currently, local
 		disk caching is functional for CIFS files opened as read-only.
+  cachetokens
+		Request the experimental CREATE cache-token extension. Requires
+		``cache=strict``. A matching token and read-caching lease permit
+		reuse of clean data retained after the last SMB CLOSE. Combine
+		with ``fsc`` and CacheFiles for disk-cache reuse after a client
+		reboot. Unsupported servers retain ordinary caching behavior.
+		See :doc:`cachetokens` for server requirements and limitations.
   dir_mode
 		If CIFS Unix extensions are not supported by the server
 		this overrides the default mode for directory inodes.

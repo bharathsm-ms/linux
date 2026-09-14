@@ -1427,6 +1427,9 @@ struct cifs_fid {
 	__u64 mid;
 #endif /* CIFS_DEBUG2 */
 	bool purge_cache;
+	struct smb2_cache_token cache_token;
+	bool cache_token_requested;
+	bool cache_token_received;
 };
 
 struct cifs_fid_locks {
@@ -1575,6 +1578,12 @@ struct cifsInodeInfo {
 	bool lease_granted; /* Flag to indicate whether lease or oplock is granted. */
 	char *symlink_target;
 	__u32 reparse_tag;
+	struct mutex cache_token_mutex;
+	struct smb2_cache_token cache_token;
+	bool cache_token_valid;
+	bool cache_token_initialized;
+	bool cache_token_cookie;
+	bool cache_token_writable;
 };
 
 static inline struct cifsInodeInfo *
@@ -2371,8 +2380,10 @@ static inline bool __cifs_cache_state_check(struct cifsInodeInfo *cinode,
 
 static inline void cifs_reset_oplock(struct cifsInodeInfo *cinode)
 {
-	scoped_guard(spinlock, &cinode->open_file_lock)
+	scoped_guard(spinlock, &cinode->open_file_lock) {
 		WRITE_ONCE(cinode->oplock, 0);
+		WRITE_ONCE(cinode->cache_token_valid, false);
+	}
 }
 
 static inline bool cifs_forced_shutdown(const struct cifs_sb_info *sbi)

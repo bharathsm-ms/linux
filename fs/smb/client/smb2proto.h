@@ -251,7 +251,8 @@ enum securityEnum smb2_select_sectype(struct TCP_Server_Info *server,
 int smb2_parse_contexts(struct TCP_Server_Info *server, struct kvec *rsp_iov,
 			__u16 *epoch, char *lease_key, __u8 *oplock,
 			struct smb2_file_all_info *buf,
-			struct create_posix_rsp *posix);
+			struct create_posix_rsp *posix,
+			struct smb2_cache_token *token, bool *token_received);
 
 int smb3_encryption_required(const struct cifs_tcon *tcon);
 int smb2_validate_iov(unsigned int offset, unsigned int buffer_length,

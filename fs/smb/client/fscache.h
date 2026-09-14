@@ -31,7 +31,16 @@ struct cifs_fscache_inode_coherency_data {
 	__le64 last_change_time_sec;
 	__le32 last_write_time_nsec;
 	__le32 last_change_time_nsec;
+	struct smb2_cache_token token;
+	__u8 token_valid;
 };
+
+static inline void cifs_cache_token_invalidate(struct inode *inode)
+{
+	WRITE_ONCE(CIFS_I(inode)->cache_token_valid, false);
+}
+
+void cifs_fscache_use_inode_cookie(struct inode *inode, bool update);
 
 #ifdef CONFIG_CIFS_FSCACHE
 
@@ -58,6 +67,15 @@ void cifs_fscache_fill_coherency(struct inode *inode,
 	struct timespec64 mtime = inode_get_mtime(inode);
 
 	memset(cd, 0, sizeof(*cd));
+	if (CIFS_I(inode)->cache_token_cookie) {
+		spin_lock(&CIFS_I(inode)->open_file_lock);
+		if (CIFS_I(inode)->cache_token_valid) {
+			cd->token = CIFS_I(inode)->cache_token;
+			cd->token_valid = 1;
+		}
+		spin_unlock(&CIFS_I(inode)->open_file_lock);
+		return;
+	}
 	cd->last_write_time_sec   = cpu_to_le64(mtime.tv_sec);
 	cd->last_write_time_nsec  = cpu_to_le32(mtime.tv_nsec);
 	cd->last_change_time_sec  = cpu_to_le64(ctime.tv_sec);
@@ -74,6 +92,7 @@ static inline void cifs_invalidate_cache(struct inode *inode, unsigned int flags
 {
 	struct cifs_fscache_inode_coherency_data cd;
 
+	cifs_cache_token_invalidate(inode);
 	cifs_fscache_fill_coherency(inode, &cd);
 	fscache_invalidate(cifs_inode_cookie(inode), &cd,
 			   i_size_read(inode), flags);
@@ -98,7 +117,10 @@ static inline void cifs_fscache_get_inode_cookie(struct inode *inode) {}
 static inline void cifs_fscache_release_inode_cookie(struct inode *inode) {}
 static inline void cifs_fscache_unuse_inode_cookie(struct inode *inode, bool update) {}
 static inline struct fscache_cookie *cifs_inode_cookie(struct inode *inode) { return NULL; }
-static inline void cifs_invalidate_cache(struct inode *inode, unsigned int flags) {}
+static inline void cifs_invalidate_cache(struct inode *inode, unsigned int flags)
+{
+	cifs_cache_token_invalidate(inode);
+}
 static inline bool cifs_fscache_enabled(struct inode *inode) { return false; }
 
 #endif /* CONFIG_CIFS_FSCACHE */

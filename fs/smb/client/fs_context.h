@@ -134,6 +134,7 @@ enum cifs_param {
 	Opt_seal,
 	Opt_noac,
 	Opt_fsc,
+	Opt_cachetokens,
 	Opt_mfsymlinks,
 	Opt_multiuser,
 	Opt_sloppy,
@@ -327,6 +328,7 @@ struct smb3_fs_context {
 	unsigned int max_channels;
 	unsigned int max_cached_dirs;
 	bool compress; /* enable SMB2 messages (READ/WRITE) de/compression */
+	bool cachetokens;
 	bool rootfs:1; /* if it's a SMB root file system */
 	bool witness:1; /* use witness protocol */
 	int unicode;

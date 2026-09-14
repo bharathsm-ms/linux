@@ -1179,6 +1179,7 @@ struct smb2_server_client_notification {
 #define SMB2_CREATE_APP_INSTANCE_VERSION "\xB9\x82\xD0\xB7\x3B\x56\x07\x4F\xA0\x7B\x52\x4A\x81\x16\xA0\x10"
 #define SVHDX_OPEN_DEVICE_CONTEXT	"\x9C\xCB\xCF\x9E\x04\xC1\xE6\x43\x98\x0E\x15\x8D\xA1\xF6\xEC\x83"
 #define SMB2_CREATE_TAG_AAPL			"AAPL"
+#define SMB2_CREATE_TAG_CACHE_TOKEN	"\xa8\x31\x2d\x77\x45\x9b\x4f\x02\x91\xc8\x6a\x34\xe5\x70\xb2\x19"
 
 /* Flag (SMB3 open response) values */
 #define SMB2_CREATE_FLAG_REPARSEPOINT 0x01
@@ -1197,6 +1198,25 @@ struct create_context {
 } __packed;
 static_assert(offsetof(struct create_context, Buffer) == sizeof(struct create_context_hdr),
 	      "struct member likely outside of __struct_group()");
+
+struct smb2_cache_token {
+	__u8 Token[32];
+} __packed;
+
+struct create_cache_token_req {
+	struct create_context_hdr ccontext;
+	__u8 Name[16];
+} __packed;
+
+struct create_cache_token_rsp {
+	struct create_context_hdr ccontext;
+	__u8 Name[16];
+	struct smb2_cache_token Token;
+} __packed;
+
+static_assert(sizeof(struct smb2_cache_token) == 32);
+static_assert(sizeof(struct create_cache_token_req) == 32);
+static_assert(sizeof(struct create_cache_token_rsp) == 64);
 
 struct smb2_create_req {
 	struct smb2_hdr hdr;

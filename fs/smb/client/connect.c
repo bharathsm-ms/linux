@@ -2934,6 +2934,8 @@ compare_mount_options(struct super_block *sb, struct cifs_mnt_data *mnt_data)
 
 	if (oldflags != newflags)
 		return 0;
+	if (old->ctx->cachetokens != new->ctx->cachetokens)
+		return 0;
 
 	/*
 	 * We want to share sb only if we don't specify an r/wsize or

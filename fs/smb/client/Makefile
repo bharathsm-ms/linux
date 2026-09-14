@@ -43,6 +43,7 @@ cifs-$(CONFIG_CIFS_ALLOW_INSECURE_LEGACY) += \
 	smb1transport.o
 
 cifs-$(CONFIG_CIFS_COMPRESSION) += compress.o
+cifs-$(CONFIG_SMB_KUNIT_TESTS) += cachetoken_test.o
 
 ifneq ($(CONFIG_CIFS_ALLOW_INSECURE_LEGACY),)
 #

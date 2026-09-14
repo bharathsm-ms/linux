@@ -352,7 +352,7 @@ replay_again:
 	rc = smb2_parse_contexts(server, rsp_iov,
 				 &oparms.fid->epoch,
 				 oparms.fid->lease_key,
-				 &oplock, NULL, NULL);
+				 &oplock, NULL, NULL, NULL, NULL);
 	if (rc) {
 		spin_unlock(&cfids->cfid_list_lock);
 		goto oshr_free;

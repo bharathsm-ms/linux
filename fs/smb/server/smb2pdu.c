@@ -4,6 +4,7 @@
  *   Copyright (C) 2018 Samsung Electronics Co., Ltd.
  */
 
+#include <crypto/sha2.h>
 #include <crypto/utils.h>
 #include <linux/inetdevice.h>
 #include <net/addrconf.h>
@@ -18,6 +19,7 @@
 #include <linux/fileattr.h>
 #include <linux/timekeeping.h>
 #include <linux/unaligned.h>
+#include <linux/module.h>
 
 #include "glob.h"
 #include "../common/smbfsctl.h"
@@ -46,6 +48,59 @@
 #include "stats.h"
 #include "transport_tcp.h"
 #include "compress.h"
+
+static bool cache_tokens_smb_only;
+module_param(cache_tokens_smb_only, bool, 0444);
+MODULE_PARM_DESC(cache_tokens_smb_only,
+	"Experimental cache tokens; requires exclusively SMB-mediated mutations");
+
+static bool smb2_get_cache_token(struct ksmbd_file *fp,
+				struct smb2_cache_token *token, __le64 end_of_file)
+{
+	struct {
+		u8 epoch[16];
+		u8 volume_id[16];
+		__le64 file_id;
+		__le64 change_id;
+		__le64 ctime_sec;
+		__le64 size;
+		__le32 ctime_nsec;
+		__le32 generation;
+	} __packed metadata;
+	struct inode *inode = file_inode(fp->filp);
+	struct kstat stat;
+	int rc;
+
+	if (!cache_tokens_smb_only || !S_ISREG(inode->i_mode) ||
+	    ksmbd_stream_fd(fp) || inode->i_sb->s_uuid_len != 16 ||
+	    !(fp->daccess & FILE_READ_DATA_LE) ||
+	    (fp->daccess & (FILE_WRITE_DATA_LE | FILE_APPEND_DATA_LE)))
+		return false;
+	rc = vfs_getattr(&fp->filp->f_path, &stat,
+			 STATX_BASIC_STATS | STATX_CHANGE_COOKIE,
+			 AT_STATX_SYNC_AS_STAT);
+	if (rc || !(stat.result_mask & STATX_CHANGE_COOKIE)) {
+		ksmbd_debug(SMB, "cache token unavailable ino=%llu getattr=%d versioned=%u\n",
+			    inode->i_ino, rc, !rc && !!(stat.result_mask & STATX_CHANGE_COOKIE));
+		return false;
+	}
+
+	if (stat.size != le64_to_cpu(end_of_file))
+		return false;
+
+	memcpy(metadata.epoch, server_conf.cache_token_epoch, sizeof(metadata.epoch));
+	memcpy(metadata.volume_id, inode->i_sb->s_uuid.b, sizeof(metadata.volume_id));
+	metadata.file_id = cpu_to_le64(stat.ino);
+	metadata.change_id = cpu_to_le64(stat.change_cookie);
+	metadata.ctime_sec = cpu_to_le64(stat.ctime.tv_sec);
+	metadata.size = cpu_to_le64(stat.size);
+	metadata.ctime_nsec = cpu_to_le32(stat.ctime.tv_nsec);
+	metadata.generation = cpu_to_le32(inode->i_generation);
+	sha256((const u8 *)&metadata, sizeof(metadata), token->Token);
+	ksmbd_debug(SMB, "cache token issued ino=%llu change=%llu size=%lld epoch=%16phN\n",
+		    stat.ino, stat.change_cookie, stat.size, metadata.epoch);
+	return true;
+}
 
 static void __wbuf(struct ksmbd_work *work, void **req, void **rsp)
 {
@@ -4133,6 +4188,7 @@ int smb2_open(struct ksmbd_work *work)
 	bool maximal_access_ctxt = false, posix_ctxt = false;
 	bool aapl_ctxt = false;
 	bool durable_rsp = true;
+	bool cache_token_ctxt = false;
 	__u64 aapl_req_bitmap = 0, aapl_client_caps = 0;
 	int s_type = 0;
 	int next_off = 0;
@@ -4977,6 +5033,20 @@ int smb2_open(struct ksmbd_work *work)
 			query_disk_id = 1;
 		}
 
+		context = smb2_find_context_vals(req, SMB2_CREATE_TAG_CACHE_TOKEN, 16);
+		if (IS_ERR(context)) {
+			rc = PTR_ERR(context);
+			goto err_out1;
+		}
+		if (context) {
+			if (le16_to_cpu(context->NameLength) != 16 ||
+			    le32_to_cpu(context->DataLength) != 0) {
+				rc = -EINVAL;
+				goto err_out1;
+			}
+			cache_token_ctxt = true;
+		}
+
 		if (test_share_config_flag(share, KSMBD_SHARE_FLAG_TIME_MACHINE)) {
 			context = smb2_find_context_vals(req, SMB2_CREATE_AAPL, 4);
 			if (IS_ERR(context)) {
@@ -5165,6 +5235,28 @@ int smb2_open(struct ksmbd_work *work)
 		iov_len += conn->vals->create_lease_size;
 		next_ptr = &lease_ccontext->Next;
 		next_off = conn->vals->create_lease_size;
+	}
+	if (cache_token_ctxt && file_info == FILE_OPENED &&
+	    opinfo && opinfo->is_lease &&
+	    (opinfo->o_lease->state & SMB2_LEASE_READ_CACHING_LE)) {
+		struct create_cache_token_rsp *token_rsp =
+			(void *)(rsp->Buffer + le32_to_cpu(rsp->CreateContextsLength));
+
+		memset(token_rsp, 0, sizeof(*token_rsp));
+		if (smb2_get_cache_token(fp, &token_rsp->Token, rsp->EndofFile)) {
+			token_rsp->ccontext.NameOffset = cpu_to_le16(16);
+			token_rsp->ccontext.NameLength = cpu_to_le16(16);
+			token_rsp->ccontext.DataOffset = cpu_to_le16(32);
+			token_rsp->ccontext.DataLength = cpu_to_le32(sizeof(token_rsp->Token));
+			memcpy(token_rsp->Name, SMB2_CREATE_TAG_CACHE_TOKEN, 16);
+			if (next_ptr)
+				*next_ptr = cpu_to_le32(next_off);
+			next_ptr = &token_rsp->ccontext.Next;
+			next_off = sizeof(*token_rsp);
+			le32_add_cpu(&rsp->CreateContextsLength, sizeof(*token_rsp));
+			iov_len += sizeof(*token_rsp);
+			contxt_cnt++;
+		}
 	}
 	opinfo_put(opinfo);
 

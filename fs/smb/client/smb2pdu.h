@@ -94,16 +94,17 @@ struct share_redirect_error_context_rsp {
  * [5] : time warp context
  * [6] : query id context
  * [7] : create ea context
- * [8] : compound padding
+ * [8] : experimental cache token context
+ * [9] : compound padding
  */
-#define SMB2_CREATE_IOV_SIZE 9
+#define SMB2_CREATE_IOV_SIZE 10
 
 /*
  * Maximum size of a SMB2_CREATE response is 64 (smb2 header) +
  * 88 (fixed part of create response) + 520 (path) + 208 (contexts) +
- * 2 bytes of padding.
+ * 2 bytes of padding, plus the optional cache token response.
  */
-#define MAX_SMB2_CREATE_RESPONSE_SIZE 880
+#define MAX_SMB2_CREATE_RESPONSE_SIZE (880 + sizeof(struct create_cache_token_rsp))
 
 #define SMB2_LEASE_READ_CACHING_HE	0x01
 #define SMB2_LEASE_HANDLE_CACHING_HE	0x02
