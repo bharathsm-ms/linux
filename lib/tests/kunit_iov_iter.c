@@ -1221,6 +1221,67 @@ static void __init iov_kunit_iter_to_sg_ubuf(struct kunit *test)
 	iov_kunit_iter_to_sg_check(test, &iter, bufsize, &data);
 }
 
+static void __init iov_kunit_extract_bvecs_alignment(struct kunit *test)
+{
+	static const struct {
+		size_t offset;
+		size_t count;
+		ssize_t result;
+	} ranges[] = {
+		{ 0, 2 * PAGE_SIZE, 2 * PAGE_SIZE },
+		{ 512, 512, 512 },
+		{ 1, 512, -EINVAL },
+		{ 0, 513, -EINVAL },
+	};
+	struct iov_iter sources[4], iter;
+	struct bio_vec input[2], output[2];
+	struct folio_queue *folioq;
+	struct xarray *xarray;
+	struct page **pages;
+	struct kvec kvec;
+	size_t source_index, range_index;
+	unsigned short nr_vecs;
+	ssize_t extracted;
+	void *buffer;
+
+	buffer = iov_kunit_create_buffer(test, &pages, ARRAY_SIZE(input));
+	folioq = iov_kunit_create_folioq(test);
+	iov_kunit_load_folioq(test, &sources[0], WRITE, folioq, pages, ARRAY_SIZE(input));
+	xarray = iov_kunit_create_xarray(test);
+	iov_kunit_load_xarray(test, &sources[1], WRITE, xarray, pages, ARRAY_SIZE(input));
+	bvec_set_page(&input[0], pages[0], PAGE_SIZE, 0);
+	bvec_set_page(&input[1], pages[1], PAGE_SIZE, 0);
+	iov_iter_bvec(&sources[2], WRITE, input, ARRAY_SIZE(input), 2 * PAGE_SIZE);
+	kvec.iov_base = buffer;
+	kvec.iov_len = 2 * PAGE_SIZE;
+	iov_iter_kvec(&sources[3], WRITE, &kvec, 1, kvec.iov_len);
+
+	for (source_index = 0; source_index < ARRAY_SIZE(sources); source_index++) {
+		for (range_index = 0; range_index < ARRAY_SIZE(ranges); range_index++) {
+			iter = sources[source_index];
+			if (iov_iter_is_kvec(&iter))
+				kvec.iov_len = ranges[range_index].offset +
+					       ranges[range_index].count;
+			iov_iter_advance(&iter, ranges[range_index].offset);
+			iov_iter_truncate(&iter, ranges[range_index].count);
+			nr_vecs = 0;
+			extracted = iov_iter_extract_bvecs(&iter, output, 2 * PAGE_SIZE,
+							   &nr_vecs, ARRAY_SIZE(output), 511, 0);
+			KUNIT_EXPECT_EQ_MSG(test, extracted, ranges[range_index].result,
+					    "type=%u range=%zu", iov_iter_type(&iter), range_index);
+			if (ranges[range_index].result < 0) {
+				KUNIT_EXPECT_EQ(test, nr_vecs, 0);
+				KUNIT_EXPECT_EQ(test, iter.count, ranges[range_index].count);
+				continue;
+			}
+			KUNIT_EXPECT_EQ(test, iter.count, 0);
+			KUNIT_ASSERT_GT(test, nr_vecs, 0);
+			KUNIT_EXPECT_PTR_EQ(test, output[0].bv_page, pages[0]);
+			KUNIT_EXPECT_EQ(test, output[0].bv_offset, ranges[range_index].offset);
+		}
+	}
+}
+
 static struct kunit_case __refdata iov_kunit_cases[] = {
 	KUNIT_CASE(iov_kunit_copy_to_kvec),
 	KUNIT_CASE(iov_kunit_copy_from_kvec),
@@ -1234,6 +1295,7 @@ static struct kunit_case __refdata iov_kunit_cases[] = {
 	KUNIT_CASE(iov_kunit_extract_pages_bvec),
 	KUNIT_CASE(iov_kunit_extract_pages_folioq),
 	KUNIT_CASE(iov_kunit_extract_pages_xarray),
+	KUNIT_CASE(iov_kunit_extract_bvecs_alignment),
 	KUNIT_CASE(iov_kunit_iter_to_sg_kvec),
 	KUNIT_CASE(iov_kunit_iter_to_sg_bvec),
 	KUNIT_CASE(iov_kunit_iter_to_sg_folioq),
